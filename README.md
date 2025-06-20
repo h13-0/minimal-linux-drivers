@@ -1,2 +1,2 @@
-# minimal-linux-drivers
-The simplest drivers for Linux.
+
+本仓库为各需求下~~最简~~Linux驱动的实现。

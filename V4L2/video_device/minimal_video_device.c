@@ -125,12 +125,34 @@ static int vidioc_g_fmt_vid_cap(struct file *file, void *priv,
 }
 
 
+
+/**
+ * @brief: 枚举作为video_capture时支持的格式
+ * @param file:
+ * @param priv:
+ * @param f
+ * @return
+ */
+static int vidioc_enum_fmt_vid_cap(struct file *file, void *priv,
+                                   struct v4l2_fmtdesc *f)
+{
+    v4l2_info(&dev->v4l2_dev, "enum videoc fmt cap at index:%d\n", f->index);
+    if(f->index == 0)
+    {
+        f->pixelformat = V4L2_PIX_FMT_RGB24;
+        return 0;
+    } else {
+        return -EINVAL;
+    }
+}
+
 /**
  * @brief: ioctl操作函数表
  */
 static const struct v4l2_ioctl_ops mvideo_ioctl_ops = {
-    .vidioc_querycap = vidioc_querycap,           /** 查询设备能力 **/
-    .vidioc_g_fmt_vid_cap = vidioc_g_fmt_vid_cap, /** video_capture支持的数据格式 **/
+    .vidioc_querycap = vidioc_querycap,                 /** 查询设备能力 **/
+    .vidioc_enum_fmt_vid_cap = vidioc_enum_fmt_vid_cap, /** 枚举设备格式(ioctl(VIDIOC_ENUM_FMT)) **/
+    .vidioc_g_fmt_vid_cap = vidioc_g_fmt_vid_cap,       /** video_capture支持的数据格式 **/
 };
 
 /**
@@ -146,13 +168,13 @@ static void mvideo_video_device_release(struct video_device *vdev)
  * @brief: 视频设备模型
  */
 static const struct video_device mvideo_videodev = {
-    .name        = MVIDEO_NAME,                  /** 暴露于用户空间的设备名 **/
-    .vfl_dir     = VFL_DIR_TX,                   /** 定义为发送设备 **/
-    .device_caps = V4L2_CAP_STREAMING,           /** 设备能力注册为流设备 **/
-    .fops        = &mvideo_fops,                  /** VFS操作接口 **/
-    .ioctl_ops   = &mvideo_ioctl_ops,             /** ioctl操作函数表 **/
-    //.minor       = -1,                           /**  **/
-    .release     = mvideo_video_device_release,         /** 设备释放接口 **/
+    .name        = MVIDEO_NAME,                                   /** 暴露于用户空间的设备名 **/
+    .vfl_dir     = VFL_DIR_RX,                                    /** 定义为接收设备(用户态视角接收数据) **/
+    .device_caps = V4L2_CAP_STREAMING | V4L2_CAP_VIDEO_CAPTURE ,  /** 设备能力注册为流设备和捕获设备 **/
+    .fops        = &mvideo_fops,                                  /** VFS操作接口 **/
+    .ioctl_ops   = &mvideo_ioctl_ops,                             /** ioctl操作函数表 **/
+    //.minor       = -1,                                            /**  **/
+    .release     = mvideo_video_device_release,                   /** 设备释放接口 **/
 };
 
 /**
