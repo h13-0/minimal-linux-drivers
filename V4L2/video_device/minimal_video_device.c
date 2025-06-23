@@ -27,7 +27,7 @@ static struct video_device *vfd;
  */
 struct mvideo_ctx {
     struct v4l2_fh fh;  /** V4L2的通用文件管理句柄，用于V4L2内部管理用户态的上下文实例 **/
-
+    // 在正常驱动开发中，通常会在本结构体的后续记录当前格式信息等
 };
 
 /**
@@ -109,32 +109,15 @@ static int vidioc_querycap(struct file *file, void *priv,
     return 0;
 }
 
-static int vidioc_g_fmt(struct mvideo_ctx *ctx, struct v4l2_format *f)
-{
-    f->fmt.pix.width        = 640;
-    f->fmt.pix.height       = 480;
-    f->fmt.pix.field        = V4L2_FIELD_NONE;
-    f->fmt.pix.pixelformat  = v4l2_fourcc('R', 'G', 'B', '3');
-    return 0;
-}
-
-static int vidioc_g_fmt_vid_cap(struct file *file, void *priv,
-                                struct v4l2_format *f)
-{
-    return vidioc_g_fmt(file2ctx(file), f);
-}
-
-
-
 /**
  * @brief: 枚举作为video_capture时支持的格式
+ * @note: 最简驱动中统一固定为RGB888
  * @param file:
  * @param priv:
- * @param f
+ * @param f:
  * @return
  */
-static int vidioc_enum_fmt_vid_cap(struct file *file, void *priv,
-                                   struct v4l2_fmtdesc *f)
+static int vidioc_enum_fmt_vid_cap(struct file *file, void *priv, struct v4l2_fmtdesc *f)
 {
     v4l2_info(&dev->v4l2_dev, "enum videoc fmt cap at index:%d\n", f->index);
     if(f->index == 0)
@@ -147,17 +130,90 @@ static int vidioc_enum_fmt_vid_cap(struct file *file, void *priv,
 }
 
 /**
+ * @brief: 查询video_capture的当前格式
+ * @note: 最简驱动中统一固定为640x480, RGB888
+ * @param file: 用户空间操作的文件句柄，正常驱动应当从中获取上下文实例
+ * @param fh:
+ * @param f: 用于返回给用户空间的格式信息
+ * @return
+ */
+static int vidioc_g_fmt_vid_cap(struct file *file, void *fh, struct v4l2_format *f)
+{
+    f->fmt.pix.width        = 640;                 /** 分辨率选定为640*480 **/
+    f->fmt.pix.height       = 480;
+    f->fmt.pix.field        = V4L2_FIELD_NONE;     /** 使用普通逐行扫描，大多数CMOS均为此格式 **/
+    f->fmt.pix.pixelformat  = V4L2_PIX_FMT_RGB24;  /** 使用RGB 888数据格式 **/
+    return 0;
+}
+
+/**
+ * @brief: 设置video_capture的数据格式
+ * @note: 最简驱动中仅允许设置为640*480、RGB888、逐行扫描，且驱动应当强行修改到目标格式(V4L2标准语义要求)。
+ * @param file: 用户空间操作的文件句柄，正常驱动应当从中获取上下文实例
+ * @param fh:
+ * @param f: 用于返回给用户空间的格式信息
+ * @return
+ */
+static int vidioc_s_fmt_vid_cap(struct file *file, void *fh, struct v4l2_format *f)
+{
+    f->fmt.pix.width        = 640;                 /** 分辨率选定为640*480 **/
+    f->fmt.pix.height       = 480;
+    f->fmt.pix.field        = V4L2_FIELD_NONE;     /** 使用普通逐行扫描，大多数CMOS均为此格式 **/
+    f->fmt.pix.pixelformat  = V4L2_PIX_FMT_RGB24;  /** 使用RGB 888数据格式 **/
+    return 0;
+}
+
+/**
+ * @brief: 枚举分辨率的回调函数(ioctl(VIDIOC_ENUM_FRAMESIZES))
+ * @param file:
+ * @param fh:
+ * @param fsize: 返回给用户空间的分辨率信息
+ * @return
+ */
+static int vidioc_enum_framesizes(struct file *file, void *fh, struct v4l2_frmsizeenum *fsize)
+{
+    // 仅支持一个离散分辨率
+    if(fsize->index != 0) {
+        return -EINVAL;
+    }
+
+    // 仅支持RGB888
+    if(fsize->pixel_format != V4L2_PIX_FMT_RGB24) {
+        return -EINVAL;
+    }
+
+    // 设置分辨率类型为离散
+    fsize->type = V4L2_FRMSIZE_TYPE_DISCRETE;
+    fsize->discrete.width = 640;
+    fsize->discrete.height = 480;
+    return 0;
+}
+
+/**
  * @brief: ioctl操作函数表
  */
 static const struct v4l2_ioctl_ops mvideo_ioctl_ops = {
-    .vidioc_querycap = vidioc_querycap,                 /** 查询设备能力 **/
-    .vidioc_enum_fmt_vid_cap = vidioc_enum_fmt_vid_cap, /** 枚举设备格式(ioctl(VIDIOC_ENUM_FMT)) **/
-    .vidioc_g_fmt_vid_cap = vidioc_g_fmt_vid_cap,       /** video_capture支持的数据格式 **/
+    .vidioc_querycap         = vidioc_querycap,          /** 查询设备能力 **/
+    .vidioc_enum_fmt_vid_cap = vidioc_enum_fmt_vid_cap,  /** 枚举video_capture支持的格式(ioctl(VIDIOC_ENUM_FMT)) **/
+    .vidioc_g_fmt_vid_cap    = vidioc_g_fmt_vid_cap,     /** 查询video_capture的当前格式 **/
+    .vidioc_s_fmt_vid_cap    = vidioc_s_fmt_vid_cap,     /** 设置video_capture的数据格式 **/
+    .vidioc_enum_framesizes  = vidioc_enum_framesizes,   /** 枚举分辨率 **/
+
+    .vidioc_reqbufs          = v4l2_m2m_ioctl_reqbufs,
+    .vidioc_querybuf         = v4l2_m2m_ioctl_querybuf,
+    .vidioc_qbuf             = v4l2_m2m_ioctl_qbuf,
+    .vidioc_dqbuf            = v4l2_m2m_ioctl_dqbuf,
+    .vidioc_prepare_buf      = v4l2_m2m_ioctl_prepare_buf,
+    .vidioc_create_bufs      = v4l2_m2m_ioctl_create_bufs,
+    .vidioc_expbuf           = v4l2_m2m_ioctl_expbuf,
+
+    .vidioc_streamon         = v4l2_m2m_ioctl_streamon,
+    .vidioc_streamoff        = v4l2_m2m_ioctl_streamoff,
 };
 
 /**
  * @brief: video设备的释放接口
- * @param vdev
+ * @param vdev: 通常用于获取设备实例，在最简驱动中不需要
  */
 static void mvideo_video_device_release(struct video_device *vdev)
 {
