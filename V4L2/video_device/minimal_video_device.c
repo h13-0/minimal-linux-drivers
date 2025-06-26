@@ -3,7 +3,7 @@
 
 #include <media/v4l2-device.h>
 #include <media/v4l2-ioctl.h>
-#include <media/v4l2-mem2mem.h>
+#include <media/videobuf2-v4l2.h>
 
 #define MVIDEO_NAME "mvideo"
 
@@ -15,6 +15,8 @@ struct mvideo_dev {
     struct device dev;           /** V4L2所依赖的设备结构, 在实际开发中应直接使用总线模型 **/
     struct v4l2_device v4l2_dev; /** V4L2顶级设备容器 **/
     struct video_device vfd;     /** video设备 **/
+    struct vb2_queue queue;      /** vb2缓冲区队列 **/
+    uint8_t fill_color[3];       /** 填充颜色 **/
 };
 
 // 设备对象指针，配合总线实现时应当定义于probe函数
@@ -95,6 +97,31 @@ static const struct v4l2_file_operations mvideo_fops = {
     .unlocked_ioctl = video_ioctl2,
     .mmap           = v4l2_m2m_fop_mmap,
 };
+
+
+static int queue_setup(struct vb2_queue *vq, unsigned int *num_buffers, unsigned int *num_planes,
+                                unsigned int sizes[], struct device *alloc_devs[])
+{
+    struct virt_cam_device *cam = vb2_get_drv_priv(vq);
+
+    // 单平面RGB888
+    *num_planes = 1;
+    sizes[0] = cam->width * cam->height * 3; // RGB888 = 3字节/像素
+
+    return 0;
+}
+
+/**
+ * @brief: videobuf2的操作回调
+ */
+static const struct vb2_ops mvideo_qops = {
+    .queue_setup     = queue_setup,
+    .buf_prepare     = buffer_prepare,
+    .buf_queue       = buffer_queue,
+    .start_streaming = start_streaming,
+    .stop_streaming  = stop_streaming,
+};
+
 
 /**
  * @brief: 查询设备能力回调(ioctl(VIDIOC_QUERYCAP, ...))
@@ -199,16 +226,12 @@ static const struct v4l2_ioctl_ops mvideo_ioctl_ops = {
     .vidioc_s_fmt_vid_cap    = vidioc_s_fmt_vid_cap,     /** 设置video_capture的数据格式 **/
     .vidioc_enum_framesizes  = vidioc_enum_framesizes,   /** 枚举分辨率 **/
 
-    .vidioc_reqbufs          = v4l2_m2m_ioctl_reqbufs,
-    .vidioc_querybuf         = v4l2_m2m_ioctl_querybuf,
-    .vidioc_qbuf             = v4l2_m2m_ioctl_qbuf,
-    .vidioc_dqbuf            = v4l2_m2m_ioctl_dqbuf,
-    .vidioc_prepare_buf      = v4l2_m2m_ioctl_prepare_buf,
-    .vidioc_create_bufs      = v4l2_m2m_ioctl_create_bufs,
-    .vidioc_expbuf           = v4l2_m2m_ioctl_expbuf,
-
-    .vidioc_streamon         = v4l2_m2m_ioctl_streamon,
-    .vidioc_streamoff        = v4l2_m2m_ioctl_streamoff,
+    .vidioc_reqbufs          = vb2_ioctl_reqbufs,        /** 使用videobuf2提供的机制 **/
+    .vidioc_querybuf         = vb2_ioctl_querybuf,
+    .vidioc_qbuf             = vb2_ioctl_qbuf,
+    .vidioc_dqbuf            = vb2_ioctl_dqbuf,
+    .vidioc_streamon         = vb2_ioctl_streamon,
+    .vidioc_streamoff        = vb2_ioctl_streamoff,
 };
 
 /**
@@ -266,7 +289,7 @@ static int __init mvideo_init(void)
     dev = kzalloc(sizeof(*dev), GFP_KERNEL);
     if(!dev) {
         ret = -ENOMEM;
-        goto error_alloc_dev;
+        goto err_alloc_dev;
     }
 
     // 初始化基础设备模型
@@ -279,7 +302,7 @@ static int __init mvideo_init(void)
     // 注册基础设备模型
     ret = device_add(&dev->dev);
     if (ret) {
-        goto error_device_add;
+        goto err_device_add;
     }
 
     // 当不为基础设备绑定驱动时，必须为v4l2_dev设置name
@@ -288,7 +311,7 @@ static int __init mvideo_init(void)
     // 注册v4l2_device
     ret = v4l2_device_register(&dev->dev, &dev->v4l2_dev);
     if(ret) {
-        goto error_v4l2_register;
+        goto err_v4l2_register;
     }
 
     // 配置视频设备模型
@@ -302,27 +325,44 @@ static int __init mvideo_init(void)
     // 注册视频设备
     ret = video_register_device(vfd, VFL_TYPE_VIDEO, 0);
     if(ret) {
-        goto error_video_register;
+        goto err_video_gister;
     }
 
     // 输出视频设备引索(次设备号、/dev/videoX的序号)
     v4l2_info(&dev->v4l2_dev, "Device registered as /dev/video%d\n", vfd->num);
 
+    // 初始化videobuf2
+    dev->queue.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    dev->queue.io_modes = VB2_MMAP | VB2_USERPTR | VB2_DMABUF;
+    dev->queue.drv_priv = cam;
+    dev->queue.ops = &mvideo_qops;
+    dev->queue.mem_ops = &vb2_vmalloc_memops;                        // 指定使用vmalloc内存
+    dev->queue.timestamp_flags = V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC;
+    ret = vb2_queue_init(&dev->queue);
+    if(ret) {
+        goto err_vb2_init;
+    }
+
+
     return ret;
 
-    // video_unregister_device(vfd);
-    // return ret;
+    // next err
+    // vb2_queue_release(&dev->queue);
 
-error_video_register:
+err_vb2_init:
+    video_unregister_device(vfd);
+    return ret;
+
+err_video_gister:
     v4l2_device_unregister(&dev->v4l2_dev);
 
-error_v4l2_register:
+err_v4l2_register:
     device_unregister(&dev->dev);
 
-error_device_add:
+err_device_add:
     put_device(&dev->dev);
 
-error_alloc_dev:
+err_alloc_dev:
     return ret;
 }
 
