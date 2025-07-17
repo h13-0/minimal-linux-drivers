@@ -4,6 +4,7 @@
 #include <media/v4l2-device.h>
 #include <media/v4l2-ioctl.h>
 #include <media/videobuf2-v4l2.h>
+#include <media/videobuf2-vmalloc.h>
 
 #define MVIDEO_NAME "mvideo"
 
@@ -17,6 +18,8 @@ struct mvideo_dev {
     struct video_device vfd;     /** video设备 **/
     struct vb2_queue queue;      /** vb2缓冲区队列 **/
     uint8_t fill_color[3];       /** 填充颜色 **/
+    uint16_t width;              /** 分辨率 **/
+    uint16_t height;
 };
 
 // 设备对象指针，配合总线实现时应当定义于probe函数
@@ -95,28 +98,133 @@ static const struct v4l2_file_operations mvideo_fops = {
     .open           = mvideo_open,              /** 设备打开回调 **/
     .release        = mvideo_release,           /** 设备释放回调 **/
     .unlocked_ioctl = video_ioctl2,
-    .mmap           = v4l2_m2m_fop_mmap,
+    .mmap           = vb2_fop_mmap,
 };
 
+/**
+ * @brief: "模拟"将buffer提交给硬件的函数
+ * @param vb: 需要填充数据的buffer
+ */
+static void submit_buffer(struct vb2_buffer *vb)
+{
+    // 向缓存中填充数据，在普通驱动中应当由硬件完成
 
+
+    // 在普通驱动中，应当在硬件处理完成后通过中断等方式触发 `vb2_buffer_done` 。
+    vb2_buffer_done(vb, VB2_BUF_STATE_DONE);
+}
+
+
+/**
+ * @brief: 队列配置回调
+ * @param vq: 需要配置的vb2缓冲区指针
+ * @param num_buffers: 驱动所需要的缓冲区数量
+ * @param num_planes: 驱动所需平面数量
+ * @param sizes: 存储每个平面所需字节数
+ * @param alloc_devs: 存储每个平面所分配的设备
+ * @return: 0 if success.
+ */
 static int queue_setup(struct vb2_queue *vq, unsigned int *num_buffers, unsigned int *num_planes,
                                 unsigned int sizes[], struct device *alloc_devs[])
 {
-    struct virt_cam_device *cam = vb2_get_drv_priv(vq);
+    if(*num_planes == 0) {
+        // 首次调用，此时驱动进行参数配置
+        // 由于仅支持RGB888，因此平面配置可忽略用户配置的像素格式
+        // 配置为单平面
+        *num_planes = 1;
+        // 每个平面的总字节数为 w*h*3
+        sizes[0] = dev->width * dev->height * 3;
 
-    // 单平面RGB888
-    *num_planes = 1;
-    sizes[0] = cam->width * cam->height * 3; // RGB888 = 3字节/像素
-
+        // 确保缓冲区数量，此时 `num_buffers` 会介于 [0, VIDEO_MAX_FRAME] 之间
+        v4l2_info(&dev->v4l2_dev, "Initial num_buffers is:%d\n", *num_buffers);
+        if(*num_buffers < 3) {
+            *num_buffers = 3;
+        }
+    } else {
+        // 后续调用，校验参数是否正确
+        if(*num_planes != 0 || sizes[0] != dev->width * dev->height * 3) {
+            return -EINVAL;
+        }
+    }
     return 0;
+}
+
+
+/**
+ * @brief:
+ *      用户空间使用 `VIDIOC_QBUF` 后，缓冲区加入队列之后的回调。在此回调中驱动应当启动硬件操作，
+ *      并在帧填充完毕后使用 `vb2_buffer_done` 通知框架。
+ * @param vb:
+ */
+static void buffer_queue(struct vb2_buffer *vb)
+{
+    // 将buffer提交给"硬件"处理
+    submit_buffer(vb);
+}
+
+
+/**
+ * @brief: 启动流传输回调。
+ *      在普通驱动中应当完成：
+ *      1. 确保硬件有足够的缓冲区开始工作
+ *      2. 初始化硬件并启动数据流
+ *      3. 处理已经入队的缓冲区
+ *      不过在本驱动中只需要完成任务 3.
+ * @param q:
+ * @param count: 执行该回调时已经入队的缓冲区数量
+ * @return
+ */
+static int start_streaming(struct vb2_queue *q, unsigned int count)
+{
+    // 处理预入队的缓冲区
+    struct vb2_buffer *vb;
+    list_for_each_entry(vb, &q->queued_list, queued_entry) {
+        // 将buffer提交给"硬件"处理
+        submit_buffer(vb);
+    }
+    return 0;
+}
+
+
+/**
+ * @brief: 停止流传输回调
+ *      在普通驱动中应当完成：
+ *      1. 停止所有硬件传输，确保不再访问所有缓冲区
+ *      2. 返回已留给驱动的缓冲区到 `DEQUEUED` 状态从而方便内核及用户态安全释放资源
+ *          - 具体而言，此时缓冲区可能有如下几种状态：
+ *          - `QUEUED` ：已经入队但还未被驱动处理的缓冲区
+ *          - `ACTIVE` ：硬件正在处理的缓冲区
+ *          - `DONE` ：已经被驱动处理完成但还未被用户态取走的缓冲区
+ *          - `DEQUEUED` ：已经被用户态取走的缓冲区
+ *          上述若干状态中，需要处理的缓冲区状态为 `QUEUED` 和 `ACTIVE` ，其均需要通过 `vb2_buffer_done` 返回到 `DEQUEUED` ，
+ *          且需要注意：
+ *          - `ACTIVE` 状态必须返回为 `ERROR` 状态，因为实际上该缓冲区并未正确填充，即：
+ *              - `vb2_buffer_done(vb, VB2_BUF_STATE_ERROR);`
+ *          - 对于 QUEUED 状态，如果输出设备(用户->驱动)想要在下次启动时保留已经传递进来的数据，则可以手动执行：
+ *              - `vb->state = VB2_BUF_STATE_DEQUEUED;`
+ *              - `return_buffer_to_user(vb);`
+ *              若不希望保留则直接执行：
+ *              - `vb2_buffer_done(vb, VB2_BUF_STATE_ERROR);`
+ *              即可。
+ *      3. 手动调用 `vb2_ops.buf_finish` 进行后处理(如果实现的话)
+ * @param vq: 所停止的vb2队列
+ */
+static void stop_streaming(struct vb2_queue *vq)
+{
+    struct vb2_buffer *vb = NULL;
+    // 将所有驱动可访问的缓冲区标记为ERROR
+    list_for_each_entry(vb, &vq->queued_list, queued_entry) {
+        vb2_buffer_done(vb, VB2_BUF_STATE_ERROR);
+    }
+    // 如果有 `vb2_ops.buf_finish` 的后处理需求时应当调用。
 }
 
 /**
  * @brief: videobuf2的操作回调
+ * @note: 只实现必要的回调
  */
 static const struct vb2_ops mvideo_qops = {
     .queue_setup     = queue_setup,
-    .buf_prepare     = buffer_prepare,
     .buf_queue       = buffer_queue,
     .start_streaming = start_streaming,
     .stop_streaming  = stop_streaming,
@@ -187,6 +295,10 @@ static int vidioc_s_fmt_vid_cap(struct file *file, void *fh, struct v4l2_format 
     f->fmt.pix.height       = 480;
     f->fmt.pix.field        = V4L2_FIELD_NONE;     /** 使用普通逐行扫描，大多数CMOS均为此格式 **/
     f->fmt.pix.pixelformat  = V4L2_PIX_FMT_RGB24;  /** 使用RGB 888数据格式 **/
+
+    // 640*480写入到dev中(可省略)
+    dev->width = 640;
+    dev->height = 480;
     return 0;
 }
 
@@ -332,9 +444,9 @@ static int __init mvideo_init(void)
     v4l2_info(&dev->v4l2_dev, "Device registered as /dev/video%d\n", vfd->num);
 
     // 初始化videobuf2
-    dev->queue.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    dev->queue.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;                   // 指定为视频捕获设备
     dev->queue.io_modes = VB2_MMAP | VB2_USERPTR | VB2_DMABUF;
-    dev->queue.drv_priv = cam;
+    dev->queue.drv_priv = dev;
     dev->queue.ops = &mvideo_qops;
     dev->queue.mem_ops = &vb2_vmalloc_memops;                        // 指定使用vmalloc内存
     dev->queue.timestamp_flags = V4L2_BUF_FLAG_TIMESTAMP_MONOTONIC;
@@ -342,6 +454,7 @@ static int __init mvideo_init(void)
     if(ret) {
         goto err_vb2_init;
     }
+    dev->vfd.queue = &dev->queue;
 
 
     return ret;
