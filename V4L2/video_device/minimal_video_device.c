@@ -1,5 +1,6 @@
 #include <linux/module.h>
 #include <linux/device.h>
+#include <linux/list.h>
 
 #include <media/v4l2-device.h>
 #include <media/v4l2-ioctl.h>
@@ -26,6 +27,11 @@ struct mvideo_dev {
 static struct mvideo_dev *dev;
 // video设备指针，配合总线实现时应当定义于probe函数
 static struct video_device *vfd;
+
+// 填充颜色
+static uint8_t color_r = 0;
+static uint8_t color_g = 0;
+static uint8_t color_b = 0;
 
 /**
  * @brief: 最小视频设备的上下文实例
@@ -59,7 +65,7 @@ static int mvideo_open(struct file *file)
     ctx = kzalloc(sizeof(*ctx), GFP_KERNEL);
     if(!ctx) {
         ret = -ENOMEM;
-        goto error_alloc_ctx;
+        goto err_alloc_ctx;
     }
 
     // 初始化文件句柄
@@ -72,7 +78,7 @@ static int mvideo_open(struct file *file)
     // 注册文件句柄
     v4l2_fh_add(&ctx->fh);
 
-error_alloc_ctx:
+err_alloc_ctx:
     return ret;
 }
 
@@ -107,11 +113,36 @@ static const struct v4l2_file_operations mvideo_fops = {
  */
 static void submit_buffer(struct vb2_buffer *vb)
 {
+    // 默认buffer处理结果为ERROR
+    enum vb2_buffer_state state = VB2_BUF_STATE_ERROR;
     // 向缓存中填充数据，在普通驱动中应当由硬件完成
+    // 1. 获取buffer指定平面的虚拟地址
+    uint8_t *addr = vb2_plane_vaddr(vb, 0);
+    if(addr != NULL)
+    {
+        // 2. 填充数据
+        for(int i = 0; i < dev->height; i++)
+        {
+            for(int j = 0; j < dev->width; j++)
+            {
+                *addr++ = dev->fill_color[0]; // 先赋值后移动指针
+                *addr++ = dev->fill_color[1];
+                *addr++ = dev->fill_color[2];
+            }
+        }
 
+        // 3. 设置实际填充字节数
+        vb2_set_plane_payload(vb, 0, dev->width * dev->height * 3);
+
+        // 4. 设置时间戳
+        vb->timestamp = ktime_get_ns();
+        state = VB2_BUF_STATE_DONE;
+    } else {
+        v4l2_err(&dev->v4l2_dev, "get vb2_plane_vaddr failed.\n");
+    }
 
     // 在普通驱动中，应当在硬件处理完成后通过中断等方式触发 `vb2_buffer_done` 。
-    vb2_buffer_done(vb, VB2_BUF_STATE_DONE);
+    vb2_buffer_done(vb, state);
 }
 
 
@@ -142,7 +173,7 @@ static int queue_setup(struct vb2_queue *vq, unsigned int *num_buffers, unsigned
         }
     } else {
         // 后续调用，校验参数是否正确
-        if(*num_planes != 0 || sizes[0] != dev->width * dev->height * 3) {
+        if(*num_planes != 1 || sizes[0] != dev->width * dev->height * 3) {
             return -EINVAL;
         }
     }
@@ -177,8 +208,9 @@ static void buffer_queue(struct vb2_buffer *vb)
 static int start_streaming(struct vb2_queue *q, unsigned int count)
 {
     // 处理预入队的缓冲区
-    struct vb2_buffer *vb;
-    list_for_each_entry(vb, &q->queued_list, queued_entry) {
+    struct vb2_buffer *vb = NULL, *tmp = NULL;
+    // 在遍历链表的过程中，链表节点可能会被标记为 `DONE` 从而移出链表，所以必须使用safe版本
+    list_for_each_entry_safe(vb, tmp, &q->queued_list, queued_entry) {
         // 将buffer提交给"硬件"处理
         submit_buffer(vb);
     }
@@ -211,9 +243,10 @@ static int start_streaming(struct vb2_queue *q, unsigned int count)
  */
 static void stop_streaming(struct vb2_queue *vq)
 {
-    struct vb2_buffer *vb = NULL;
+    struct vb2_buffer *vb = NULL, *tmp = NULL;
+    // 在实际驱动中需要停止硬件操作所有缓冲区之后才可执行后续操作，但是本驱动中缓冲区仅会在buffer_queue中操作，且其不会与本回调同时被执行
     // 将所有驱动可访问的缓冲区标记为ERROR
-    list_for_each_entry(vb, &vq->queued_list, queued_entry) {
+    list_for_each_entry_safe(vb, tmp, &vq->queued_list, queued_entry) {
         vb2_buffer_done(vb, VB2_BUF_STATE_ERROR);
     }
     // 如果有 `vb2_ops.buf_finish` 的后处理需求时应当调用。
@@ -295,10 +328,6 @@ static int vidioc_s_fmt_vid_cap(struct file *file, void *fh, struct v4l2_format 
     f->fmt.pix.height       = 480;
     f->fmt.pix.field        = V4L2_FIELD_NONE;     /** 使用普通逐行扫描，大多数CMOS均为此格式 **/
     f->fmt.pix.pixelformat  = V4L2_PIX_FMT_RGB24;  /** 使用RGB 888数据格式 **/
-
-    // 640*480写入到dev中(可省略)
-    dev->width = 640;
-    dev->height = 480;
     return 0;
 }
 
@@ -352,6 +381,7 @@ static const struct v4l2_ioctl_ops mvideo_ioctl_ops = {
  */
 static void mvideo_video_device_release(struct video_device *vdev)
 {
+    vb2_queue_release(&dev->queue);
     v4l2_device_unregister(&dev->v4l2_dev);
 }
 
@@ -403,6 +433,12 @@ static int __init mvideo_init(void)
         ret = -ENOMEM;
         goto err_alloc_dev;
     }
+    // 填充基础参数
+    dev->fill_color[0] = color_r;
+    dev->fill_color[1] = color_g;
+    dev->fill_color[2] = color_b;
+    dev->width = 640;
+    dev->height = 480;
 
     // 初始化基础设备模型
     device_initialize(&dev->dev);
@@ -445,7 +481,7 @@ static int __init mvideo_init(void)
 
     // 初始化videobuf2
     dev->queue.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;                   // 指定为视频捕获设备
-    dev->queue.io_modes = VB2_MMAP | VB2_USERPTR | VB2_DMABUF;
+    dev->queue.io_modes = VB2_MMAP | VB2_USERPTR;
     dev->queue.drv_priv = dev;
     dev->queue.ops = &mvideo_qops;
     dev->queue.mem_ops = &vb2_vmalloc_memops;                        // 指定使用vmalloc内存
@@ -456,7 +492,6 @@ static int __init mvideo_init(void)
     }
     dev->vfd.queue = &dev->queue;
 
-
     return ret;
 
     // next err
@@ -464,7 +499,6 @@ static int __init mvideo_init(void)
 
 err_vb2_init:
     video_unregister_device(vfd);
-    return ret;
 
 err_video_gister:
     v4l2_device_unregister(&dev->v4l2_dev);
@@ -478,6 +512,10 @@ err_device_add:
 err_alloc_dev:
     return ret;
 }
+
+module_param(color_r, byte, S_IRUGO);
+module_param(color_g, byte, S_IRUGO);
+module_param(color_b, byte, S_IRUGO);
 
 MODULE_LICENSE("GPL v2");
 module_init(mvideo_init);
