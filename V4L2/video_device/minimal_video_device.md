@@ -34,11 +34,63 @@ number headings: auto, first-level 1, max 6, 1.1
 
 ## 3.2 程序基础框架
 
+在本驱动中，主要依赖于如下几个组件的互相配合：
+1. `v4l2_device` 基础容器
+2. `video_device` ：主要提供了摄像头文件的VFS与ioctl接口
+3. `vb2_queue` ：主要提供了缓冲区管理相关机制，包括：
+	1. 缓冲区分配、查询、入队、出队等功能
+	2. 流开启与关闭功能
+
+## 3.3 资源管理
+
+### 3.3.1 资源分配顺序
+
+在模块的初始化函数中，有如下的资源分配顺序：
+1. 分配 `dev` (kzalloc)
+2. 初始化设备： `device_initialize`
+3. 设置设备名称： `dev_set_name`
+4. 注册设备： `device_add`
+5. 注册v4l2设备： `v4l2_device_register`
+6. 配置video_device：复制 `mvideo_videodev`，设置v4l2_dev等
+7. 注册video设备：`video_register_device`
+8. 初始化vb2队列：`vb2_queue_init`
+
+### 3.3.2 release回调
+
+在本驱动中，主要有如下三个release回调：
+1. `device_release` ：当基础设备模型( `dev->dev` )计数器归0时自动调用
+2. `video_device_release` ：取消注册 `video_device` 且设备计数器归0时自动调用
+3. `mvideo_release` ：当 `/dev/video*` 文件的打开计数器归0时自动调用
+
+#### 3.3.2.1 mvideo_release
+
+```C
+
+```
+
+
+#### 3.3.2.2 video_device_release
 
 
 
+#### 3.3.2.3 device_release
 
-## 3.3 测试运行
+```C
+/**
+ * @brief: 基础设备模型释放函数
+ * @note: 调用时机为dev的引用计数器变0
+ * @param dev
+ */
+static void device_release(struct device *dev)
+{
+    kfree(container_of(dev, struct mvideo_dev, dev));
+    printk(KERN_INFO "mvideo device released.\n");
+}
+```
+
+该函数会在基础设备模型计数器归0时自动调用，即此时应当为资源回收的最后一步，清除设备对象的内存即可。
+
+## 3.4 测试运行
 
 ```shell
 sudo modprobe ./minimal_video_device.ko color_r=255 color_g=0 color_b=0

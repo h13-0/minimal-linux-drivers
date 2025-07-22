@@ -1,13 +1,18 @@
+#define MVIDEO_NAME "mvideo"
+
+#ifndef pr_fmt
+#define pr_fmt(fmt) "mvideo: " fmt
+#endif
+
 #include <linux/module.h>
 #include <linux/device.h>
 #include <linux/list.h>
+#include <linux/printk.h>
 
 #include <media/v4l2-device.h>
 #include <media/v4l2-ioctl.h>
 #include <media/videobuf2-v4l2.h>
 #include <media/videobuf2-vmalloc.h>
-
-#define MVIDEO_NAME "mvideo"
 
 
 /**
@@ -182,7 +187,7 @@ static int queue_setup(struct vb2_queue *vq, unsigned int *num_buffers, unsigned
 
 
 /**
- * @brief:
+ * @brief: 用户态将缓冲区入队后的回调。
  *      用户空间使用 `VIDIOC_QBUF` 后，缓冲区加入队列之后的回调。在此回调中驱动应当启动硬件操作，
  *      并在帧填充完毕后使用 `vb2_buffer_done` 通知框架。
  * @param vb:
@@ -199,21 +204,16 @@ static void buffer_queue(struct vb2_buffer *vb)
  *      在普通驱动中应当完成：
  *      1. 确保硬件有足够的缓冲区开始工作
  *      2. 初始化硬件并启动数据流
- *      3. 处理已经入队的缓冲区
- *      不过在本驱动中只需要完成任务 3.
+ *      3. 当驱动程序发生错误时，已经被 `buf_queue` 取出的缓冲区需要通过 `vb2_buffer_done` 来标记和归还缓冲区。
+ *          需要注意，其应当将缓冲区标记为 `VB2_BUF_STATE_QUEUED` 。
+ *      在本驱动中不需要处理任何事情
  * @param q:
  * @param count: 执行该回调时已经入队的缓冲区数量
  * @return
  */
 static int start_streaming(struct vb2_queue *q, unsigned int count)
 {
-    // 处理预入队的缓冲区
-    struct vb2_buffer *vb = NULL, *tmp = NULL;
-    // 在遍历链表的过程中，链表节点可能会被标记为 `DONE` 从而移出链表，所以必须使用safe版本
-    list_for_each_entry_safe(vb, tmp, &q->queued_list, queued_entry) {
-        // 将buffer提交给"硬件"处理
-        submit_buffer(vb);
-    }
+    // 在本驱动中不需要处理任何事情
     return 0;
 }
 
@@ -228,28 +228,18 @@ static int start_streaming(struct vb2_queue *q, unsigned int count)
  *          - `ACTIVE` ：硬件正在处理的缓冲区
  *          - `DONE` ：已经被驱动处理完成但还未被用户态取走的缓冲区
  *          - `DEQUEUED` ：已经被用户态取走的缓冲区
- *          上述若干状态中，需要处理的缓冲区状态为 `QUEUED` 和 `ACTIVE` ，其均需要通过 `vb2_buffer_done` 返回到 `DEQUEUED` ，
+ *          上述若干状态中，需要处理的缓冲区状态为 `ACTIVE` ，其均需要通过 `vb2_buffer_done` 返回到 `DEQUEUED` ，
  *          且需要注意：
  *          - `ACTIVE` 状态必须返回为 `ERROR` 状态，因为实际上该缓冲区并未正确填充，即：
  *              - `vb2_buffer_done(vb, VB2_BUF_STATE_ERROR);`
- *          - 对于 QUEUED 状态，如果输出设备(用户->驱动)想要在下次启动时保留已经传递进来的数据，则可以手动执行：
- *              - `vb->state = VB2_BUF_STATE_DEQUEUED;`
- *              - `return_buffer_to_user(vb);`
- *              若不希望保留则直接执行：
- *              - `vb2_buffer_done(vb, VB2_BUF_STATE_ERROR);`
- *              即可。
- *      3. 手动调用 `vb2_ops.buf_finish` 进行后处理(如果实现的话)
+ *      3. 手动调用 `vb2_ops.buf_finish` 进行后处理(如果实现了该函数的话)
  * @param vq: 所停止的vb2队列
  */
 static void stop_streaming(struct vb2_queue *vq)
 {
-    struct vb2_buffer *vb = NULL, *tmp = NULL;
-    // 在实际驱动中需要停止硬件操作所有缓冲区之后才可执行后续操作，但是本驱动中缓冲区仅会在buffer_queue中操作，且其不会与本回调同时被执行
-    // 将所有驱动可访问的缓冲区标记为ERROR
-    list_for_each_entry_safe(vb, tmp, &vq->queued_list, queued_entry) {
-        vb2_buffer_done(vb, VB2_BUF_STATE_ERROR);
-    }
-    // 如果有 `vb2_ops.buf_finish` 的后处理需求时应当调用。
+    // 在实际驱动中需要停止硬件操作所有缓冲区之后才可执行后续操作，但是本驱动中缓冲区仅会在buffer_queue中操作，且其不会与本回调同时被执行。
+    // 也因此本函数中不会有需要操作的 ACTIVE 缓冲区，直接返回即可。
+    // 对于从 ACTIVE 返回的缓冲区，如果有 `vb2_ops.buf_finish` 的后处理需求时应当调用。
 }
 
 /**
@@ -379,10 +369,9 @@ static const struct v4l2_ioctl_ops mvideo_ioctl_ops = {
  * @brief: video设备的释放接口
  * @param vdev: 通常用于获取设备实例，在最简驱动中不需要
  */
-static void mvideo_video_device_release(struct video_device *vdev)
+static void mvideo_device_release(struct video_device *vdev)
 {
     vb2_queue_release(&dev->queue);
-    v4l2_device_unregister(&dev->v4l2_dev);
 }
 
 /**
@@ -395,7 +384,7 @@ static const struct video_device mvideo_videodev = {
     .fops        = &mvideo_fops,                                  /** VFS操作接口 **/
     .ioctl_ops   = &mvideo_ioctl_ops,                             /** ioctl操作函数表 **/
     //.minor       = -1,                                            /**  **/
-    .release     = mvideo_video_device_release,                   /** 设备释放接口 **/
+    .release     = mvideo_device_release,                          /** 设备释放接口 **/
 };
 
 /**
@@ -403,10 +392,10 @@ static const struct video_device mvideo_videodev = {
  * @note: 调用时机为dev的引用计数器变0
  * @param dev
  */
-static void mvideo_device_release(struct device *dev)
+static void device_release(struct device *dev)
 {
     kfree(container_of(dev, struct mvideo_dev, dev));
-    printk(KERN_INFO "mvideo device released.\n");
+    pr_info("mvideo device released.\n");
 }
 
 /**
@@ -414,8 +403,17 @@ static void mvideo_device_release(struct device *dev)
  */
 static void __exit mvideo_exit(void)
 {
-    video_unregister_device(vfd);
-    device_unregister(&dev->dev); // 该步骤会自动
+    if (!dev) return;
+
+    if (vfd) {
+        video_unregister_device(vfd);
+        vfd = NULL;
+    }
+
+    v4l2_device_unregister(&dev->v4l2_dev);
+    // device_unregister会减少两次计数器，因此不再需要手动put_device
+    device_unregister(&dev->dev);
+    dev = NULL;
 }
 
 /**
@@ -440,14 +438,14 @@ static int __init mvideo_init(void)
     dev->width = 640;
     dev->height = 480;
 
-    // 初始化基础设备模型
+    // 初始化基础设备模型，并将dev->dev的引用计数器置为1(引用计数器为dev->dev.kobj.kref)
     device_initialize(&dev->dev);
 
     // 配置基础设备模型
-    dev->dev.release = mvideo_device_release;
+    dev->dev.release = device_release;
     dev_set_name(&dev->dev, MVIDEO_NAME);
 
-    // 注册基础设备模型
+    // 注册基础设备模型，随后dev->dev的引用计数器为2
     ret = device_add(&dev->dev);
     if (ret) {
         goto err_device_add;
@@ -456,7 +454,7 @@ static int __init mvideo_init(void)
     // 当不为基础设备绑定驱动时，必须为v4l2_dev设置name
     strscpy(dev->v4l2_dev.name, MVIDEO_NAME, sizeof(dev->v4l2_dev.name));
 
-    // 注册v4l2_device
+    // 注册v4l2_device，随后dev->dev的引用计数器为3
     ret = v4l2_device_register(&dev->dev, &dev->v4l2_dev);
     if(ret) {
         goto err_v4l2_register;
@@ -470,10 +468,10 @@ static int __init mvideo_init(void)
     // 向video_device中寄存私有数据
     video_set_drvdata(vfd, dev);
 
-    // 注册视频设备
+    // 注册视频设备，随后dev->dev的引用计数器为4
     ret = video_register_device(vfd, VFL_TYPE_VIDEO, 0);
     if(ret) {
-        goto err_video_gister;
+        goto err_video_register;
     }
 
     // 输出视频设备引索(次设备号、/dev/videoX的序号)
@@ -500,14 +498,18 @@ static int __init mvideo_init(void)
 err_vb2_init:
     video_unregister_device(vfd);
 
-err_video_gister:
+err_video_register:
     v4l2_device_unregister(&dev->v4l2_dev);
 
 err_v4l2_register:
-    device_unregister(&dev->dev);
+    // 此处不可使用device_unregister，因为其会使计数器-2
+    device_del(&dev->dev);
 
 err_device_add:
+    // 减少引用计数器，并触发 `device_release`
     put_device(&dev->dev);
+    dev = NULL;            // 清空静态变量指针
+    vfd = NULL;
 
 err_alloc_dev:
     return ret;
