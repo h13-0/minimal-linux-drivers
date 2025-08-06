@@ -7,7 +7,6 @@
 #include <linux/platform_device.h>
 #include <linux/printk.h>
 
-
 /**********************************************************************************************************************/
 /*                                              下方为设备侧代码，仅与设备相关                                              */
 /**********************************************************************************************************************/
@@ -16,7 +15,7 @@
  * @brief: 当设备的引用计数器归零时触发该回调
  * @note:
  *      1. 该函数应当释放仅与设备相关的资源，即设备在还没被驱动绑定时必须的资源(设备可以在无驱动时存在)，即仅包含设备侧的资源
- * @param dev:
+ * @param dev: 需要释放的设备对象
  */
 static void mpdev_release(struct device *dev)
 {
@@ -38,8 +37,15 @@ static struct platform_device mpdev = {
 
 /**
  * @brief: 平台设备的探测回调
- * @param pdev:
+ * @param pdev: 需要探测的平台设备
  * @return:
+ *      - 成功时返回0
+ *      - 失败时返回负的错误码，其中：
+ *          - `-ENOMEM` ：表示内存不足
+ *          - `-EINVAL` ：无效参数
+ *          - `-ENODEV` ：设备不存在或不支持
+ *          - `-EBUSY` ：请求的资源已被占用
+ *          - `-EPROBE_DEFER` ：表示驱动请求延迟探测
  */
 static int mpdev_probe(struct platform_device *pdev)
 {
@@ -58,7 +64,7 @@ static int mpdev_probe(struct platform_device *pdev)
  *      2. 需要注意，设备可以在无驱动时存在
  *      3. 该回调应当值回收与驱动相关的资源，即仅包含驱动侧的资源，仅与设备相关的资源应当在 `mpdev_release` 中回收
  *      4. 该回调执行完毕后，设备的引用计数器会减一，也因此其必定会在 `mpdev_release` 前被调用
- * @param pdev
+ * @param pdev: 需要移除的设备
  */
 static void mpdev_remove(struct platform_device *pdev)
 {
