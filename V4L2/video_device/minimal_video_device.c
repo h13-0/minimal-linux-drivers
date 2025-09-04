@@ -19,12 +19,12 @@
  * @brief: 设备对象
  */
 struct mvideo_dev {
-    struct device dev;           /** V4L2所依赖的设备结构, 在实际开发中应直接使用总线模型 **/
-    struct v4l2_device v4l2_dev; /** V4L2顶级设备容器 **/
-    struct video_device vfd;     /** video设备 **/
-    struct vb2_queue queue;      /** vb2缓冲区队列 **/
-    uint8_t fill_color[3];       /** 填充颜色 **/
-    uint16_t width;              /** 分辨率 **/
+    struct device dev;           /** V4L2所依赖的设备结构, 在实际开发中应直接使用总线模型 */
+    struct v4l2_device v4l2_dev; /** V4L2顶级设备容器 */
+    struct video_device vfd;     /** video设备 */
+    struct vb2_queue queue;      /** vb2缓冲区队列 */
+    uint8_t fill_color[3];       /** 填充颜色 */
+    uint16_t width;              /** 分辨率 */
     uint16_t height;
 };
 
@@ -42,7 +42,7 @@ static uint8_t color_b = 0;
  * @brief: 最小视频设备的上下文实例
  */
 struct mvideo_ctx {
-    struct v4l2_fh fh;  /** V4L2的通用文件管理句柄，用于V4L2内部管理用户态的上下文实例 **/
+    struct v4l2_fh fh;  /** V4L2的通用文件管理句柄，用于V4L2内部管理用户态的上下文实例 */
     // 在正常驱动开发中，通常会在本结构体的后续记录当前格式信息等
 };
 
@@ -105,9 +105,9 @@ static int mvideo_release(struct file *file)
  * @brief: VFS操作接口
  */
 static const struct v4l2_file_operations mvideo_fops = {
-    .owner          = THIS_MODULE,              /** 所有者指向本模块 **/
-    .open           = mvideo_open,              /** 设备打开回调 **/
-    .release        = mvideo_release,           /** 设备释放回调 **/
+    .owner          = THIS_MODULE,              /** 所有者指向本模块 */
+    .open           = mvideo_open,              /** 设备打开回调 */
+    .release        = mvideo_release,           /** 设备释放回调 */
     .unlocked_ioctl = video_ioctl2,
     .mmap           = vb2_fop_mmap,
 };
@@ -247,17 +247,17 @@ static void stop_streaming(struct vb2_queue *vq)
  * @note: 只实现必要的回调
  */
 static const struct vb2_ops mvideo_qops = {
-    .queue_setup     = queue_setup,
-    .buf_queue       = buffer_queue,
-    .start_streaming = start_streaming,
-    .stop_streaming  = stop_streaming,
+    .queue_setup     = queue_setup,           /** 队列配置回调 */
+    .buf_queue       = buffer_queue,          /** 用户态将缓冲区入队后的回调 */
+    .start_streaming = start_streaming,       /** 启动流传输回调 */
+    .stop_streaming  = stop_streaming,        /** 停止流传输回调 */
 };
 
 
 /**
  * @brief: 查询设备能力回调(ioctl(VIDIOC_QUERYCAP, ...))
  */
-static int vidioc_querycap(struct file *file, void *priv,
+static int vidioc_querycap(struct file *file, void *fh,
                            struct v4l2_capability *cap)
 {
     strscpy(cap->driver, MVIDEO_NAME, sizeof(cap->driver));
@@ -271,11 +271,13 @@ static int vidioc_querycap(struct file *file, void *priv,
  * @brief: 枚举作为video_capture时支持的格式
  * @note: 最简驱动中统一固定为RGB888
  * @param file:
- * @param priv:
+ * @param fh:
+ *      通常指向上下文实例的 `struct v4l2_fh` 成员 。实际上指向的是 `mvideo_open` 函数中设置的 `file->private_data` 的值。
+ *      但是通常会把 `struct v4l2_fh` 放到上下文实例(`mvideo_ctx`)的第一个成员中，因此通常二者地址相同。
  * @param f:
  * @return
  */
-static int vidioc_enum_fmt_vid_cap(struct file *file, void *priv, struct v4l2_fmtdesc *f)
+static int vidioc_enum_fmt_vid_cap(struct file *file, void *fh, struct v4l2_fmtdesc *f)
 {
     v4l2_info(&dev->v4l2_dev, "enum videoc fmt cap at index:%d\n", f->index);
     if(f->index == 0)
@@ -290,34 +292,40 @@ static int vidioc_enum_fmt_vid_cap(struct file *file, void *priv, struct v4l2_fm
 /**
  * @brief: 查询video_capture的当前格式
  * @note: 最简驱动中统一固定为640x480, RGB888
- * @param file: 用户空间操作的文件句柄，正常驱动应当从中获取上下文实例
+ * @param file: 用户空间操作的文件句柄
  * @param fh:
+ *      通常指向上下文实例的 `struct v4l2_fh` 成员 。实际上指向的是 `mvideo_open` 函数中设置的 `file->private_data` 的值。
+ *      但是通常会把 `struct v4l2_fh` 放到上下文实例(`mvideo_ctx`)的第一个成员中，因此通常二者地址相同。
  * @param f: 用于返回给用户空间的格式信息
  * @return
  */
 static int vidioc_g_fmt_vid_cap(struct file *file, void *fh, struct v4l2_format *f)
 {
-    f->fmt.pix.width        = 640;                 /** 分辨率选定为640*480 **/
+    f->fmt.pix.width        = 640;                 /** 分辨率选定为640*480 */
     f->fmt.pix.height       = 480;
-    f->fmt.pix.field        = V4L2_FIELD_NONE;     /** 使用普通逐行扫描，大多数CMOS均为此格式 **/
-    f->fmt.pix.pixelformat  = V4L2_PIX_FMT_RGB24;  /** 使用RGB 888数据格式 **/
+    f->fmt.pix.field        = V4L2_FIELD_NONE;     /** 使用普通逐行扫描，大多数CMOS均为此格式 */
+    f->fmt.pix.pixelformat  = V4L2_PIX_FMT_RGB24;  /** 使用RGB 888数据格式 */
     return 0;
 }
 
 /**
  * @brief: 设置video_capture的数据格式
- * @note: 最简驱动中仅允许设置为640*480、RGB888、逐行扫描，且驱动应当强行修改到目标格式(V4L2标准语义要求)。
- * @param file: 用户空间操作的文件句柄，正常驱动应当从中获取上下文实例
+ * @note:
+ *      最简驱动中仅允许设置为640*480、RGB888、逐行扫描，且驱动应当强行修改到目标格式(V4L2标准语义要求)。
+ *      文档规定：除非 `f->type` 字段错误，否则不应返回错误代码，因此直接修改格式和参数即可。
+ * @param file: 用户空间操作的文件句柄
  * @param fh:
+ *      通常指向上下文实例的 `struct v4l2_fh` 成员 。实际上指向的是 `mvideo_open` 函数中设置的 `file->private_data` 的值。
+ *      但是通常会把 `struct v4l2_fh` 放到上下文实例(`mvideo_ctx`)的第一个成员中，因此通常二者地址相同。
  * @param f: 用于返回给用户空间的格式信息
  * @return
  */
 static int vidioc_s_fmt_vid_cap(struct file *file, void *fh, struct v4l2_format *f)
 {
-    f->fmt.pix.width        = 640;                 /** 分辨率选定为640*480 **/
+    f->fmt.pix.width        = 640;                 /** 分辨率选定为640*480 */
     f->fmt.pix.height       = 480;
-    f->fmt.pix.field        = V4L2_FIELD_NONE;     /** 使用普通逐行扫描，大多数CMOS均为此格式 **/
-    f->fmt.pix.pixelformat  = V4L2_PIX_FMT_RGB24;  /** 使用RGB 888数据格式 **/
+    f->fmt.pix.field        = V4L2_FIELD_NONE;     /** 使用普通逐行扫描，大多数CMOS均为此格式 */
+    f->fmt.pix.pixelformat  = V4L2_PIX_FMT_RGB24;  /** 使用RGB 888数据格式 */
     return 0;
 }
 
@@ -325,6 +333,8 @@ static int vidioc_s_fmt_vid_cap(struct file *file, void *fh, struct v4l2_format 
  * @brief: 枚举分辨率的回调函数(ioctl(VIDIOC_ENUM_FRAMESIZES))
  * @param file:
  * @param fh:
+ *      通常指向上下文实例的 `struct v4l2_fh` 成员 。实际上指向的是 `mvideo_open` 函数中设置的 `file->private_data` 的值。
+ *      但是通常会把 `struct v4l2_fh` 放到上下文实例(`mvideo_ctx`)的第一个成员中，因此通常二者地址相同。
  * @param fsize: 返回给用户空间的分辨率信息
  * @return
  */
@@ -351,13 +361,13 @@ static int vidioc_enum_framesizes(struct file *file, void *fh, struct v4l2_frmsi
  * @brief: ioctl操作函数表
  */
 static const struct v4l2_ioctl_ops mvideo_ioctl_ops = {
-    .vidioc_querycap         = vidioc_querycap,          /** 查询设备能力 **/
-    .vidioc_enum_fmt_vid_cap = vidioc_enum_fmt_vid_cap,  /** 枚举video_capture支持的格式(ioctl(VIDIOC_ENUM_FMT)) **/
-    .vidioc_g_fmt_vid_cap    = vidioc_g_fmt_vid_cap,     /** 查询video_capture的当前格式 **/
-    .vidioc_s_fmt_vid_cap    = vidioc_s_fmt_vid_cap,     /** 设置video_capture的数据格式 **/
-    .vidioc_enum_framesizes  = vidioc_enum_framesizes,   /** 枚举分辨率 **/
+    .vidioc_querycap         = vidioc_querycap,          /** 查询设备能力 */
+    .vidioc_enum_fmt_vid_cap = vidioc_enum_fmt_vid_cap,  /** 枚举video_capture支持的格式(ioctl(VIDIOC_ENUM_FMT)) */
+    .vidioc_g_fmt_vid_cap    = vidioc_g_fmt_vid_cap,     /** 查询video_capture的当前格式 */
+    .vidioc_s_fmt_vid_cap    = vidioc_s_fmt_vid_cap,     /** 设置video_capture的数据格式 */
+    .vidioc_enum_framesizes  = vidioc_enum_framesizes,   /** 枚举分辨率 */
 
-    .vidioc_reqbufs          = vb2_ioctl_reqbufs,        /** 使用videobuf2提供的机制 **/
+    .vidioc_reqbufs          = vb2_ioctl_reqbufs,        /** 使用videobuf2提供的机制 */
     .vidioc_querybuf         = vb2_ioctl_querybuf,
     .vidioc_qbuf             = vb2_ioctl_qbuf,
     .vidioc_dqbuf            = vb2_ioctl_dqbuf,
@@ -378,13 +388,13 @@ static void mvideo_device_release(struct video_device *vdev)
  * @brief: 视频设备模型
  */
 static const struct video_device mvideo_videodev = {
-    .name        = MVIDEO_NAME,                                   /** 暴露于用户空间的设备名 **/
-    .vfl_dir     = VFL_DIR_RX,                                    /** 定义为接收设备(用户态视角接收数据) **/
-    .device_caps = V4L2_CAP_STREAMING | V4L2_CAP_VIDEO_CAPTURE ,  /** 设备能力注册为流设备和捕获设备 **/
-    .fops        = &mvideo_fops,                                  /** VFS操作接口 **/
-    .ioctl_ops   = &mvideo_ioctl_ops,                             /** ioctl操作函数表 **/
-    //.minor       = -1,                                            /**  **/
-    .release     = mvideo_device_release,                          /** 设备释放接口 **/
+    .name        = MVIDEO_NAME,                                   /** 暴露于用户空间的设备名 */
+    .vfl_dir     = VFL_DIR_RX,                                    /** 定义为接收设备(用户态视角接收数据) */
+    .device_caps = V4L2_CAP_STREAMING | V4L2_CAP_VIDEO_CAPTURE ,  /** 设备能力注册为流设备和捕获设备 */
+    .fops        = &mvideo_fops,                                  /** VFS操作接口 */
+    .ioctl_ops   = &mvideo_ioctl_ops,                             /** ioctl操作函数表 */
+    //.minor       = -1,                                            /**  */
+    .release     = mvideo_device_release,                          /** 设备释放接口 */
 };
 
 /**
