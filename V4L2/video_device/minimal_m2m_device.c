@@ -20,9 +20,11 @@
  */
 struct mm2m_dev
 {
-    struct v4l2_device      v4l2_dev;  /** 基础v4l2容器 */
-    struct video_device     vfd;       /** video设备 */
-    struct v4l2_m2m_dev     *m2m_dev;  /** m2m上下文控制器 */
+    struct v4l2_device      v4l2_dev;          /** 基础v4l2容器 */
+    struct video_device     vfd;               /** video设备 */
+    struct v4l2_m2m_dev     *m2m_dev;          /** m2m上下文控制器 */
+
+    struct workqueue_struct *workqueue;        /** 由于本驱动未设置帧率限制，因此若使用共享队列则会占用过多的共享资源 */
 };
 
 /**
@@ -32,7 +34,7 @@ struct mm2m_ctx
 {
     struct v4l2_fh          fh;                 /** V4L2的通用文件管理句柄，用于V4L2内部管理用户态的上下文实例 */
     struct mm2m_dev         *dev;               /** 驱动私有数据，会在 `device_work` 中用于提交已完成的任务 */
-    
+
     struct delayed_work     work;               /** 可延迟工作对象，用于在device_run中异步执行帧复制任务 */
 
     // 输入方向的配置信息，输出方向和输入方向保持一致
@@ -138,7 +140,7 @@ static void device_run(void *priv)
     // v4l2_info(&ctx->dev->v4l2_dev, "drvice running..");
 
     // 将ctx实例中的工作对象注册到共享工作队列中
-    queue_delayed_work(system_wq, &ctx->work, 0);
+    queue_delayed_work(ctx->dev->workqueue, &ctx->work, 0);
 }
 
 /**
@@ -194,11 +196,18 @@ static void device_work(struct work_struct *w)
         dst_buf->vb2_buf.planes[0].length
     );
 
-    // 3. 标记缓冲区完成
+    // 3. 设置已用数据长度
+    if (src_buf->vb2_buf.planes[0].bytesused) {
+        dst_buf->vb2_buf.planes[0].bytesused = src_buf->vb2_buf.planes[0].bytesused;
+    } else {
+        dst_buf->vb2_buf.planes[0].bytesused = dst_buf->vb2_buf.planes[0].length;
+    }
+
+    // 4. 标记缓冲区完成
     v4l2_m2m_buf_done(src_buf, VB2_BUF_STATE_DONE);
     v4l2_m2m_buf_done(dst_buf, VB2_BUF_STATE_DONE);
 
-    // 4. 通知当前job完成，随后m2m框架才会开启下一个任务
+    // 5. 通知当前job完成，随后m2m框架才会开启下一个任务
     v4l2_m2m_job_finish(ctx->dev->m2m_dev, ctx->fh.m2m_ctx);
 }
 
@@ -289,8 +298,19 @@ static int start_streaming(struct vb2_queue *q, unsigned int count)
 static void stop_streaming(struct vb2_queue *q)
 {
     struct mm2m_ctx *ctx = q->drv_priv;
+    struct vb2_v4l2_buffer *vbuf = NULL;
 
     atomic_dec(&ctx->running);
+
+    while(1) {
+        if (V4L2_TYPE_IS_OUTPUT(q->type))
+            vbuf = v4l2_m2m_src_buf_remove(ctx->fh.m2m_ctx);
+        else
+            vbuf = v4l2_m2m_dst_buf_remove(ctx->fh.m2m_ctx);
+        if (!vbuf)
+            return;
+        v4l2_m2m_buf_done(vbuf, VB2_BUF_STATE_ERROR);
+    }
 }
 
 
@@ -405,9 +425,27 @@ static int mm2m_release(struct file *file)
 {
     struct mm2m_ctx *ctx = file2ctx(file);
 
-    // 倒序释放资源
+    // 取消所有任务
+    cancel_delayed_work_sync(&ctx->work);
+    // 确保流传输停止
+    if (atomic_read(&ctx->running)) {
+        struct vb2_queue *src_vq, *dst_vq;
 
+        src_vq = v4l2_m2m_get_src_vq(ctx->fh.m2m_ctx);
+        dst_vq = v4l2_m2m_get_dst_vq(ctx->fh.m2m_ctx);
+
+        if (vb2_is_streaming(src_vq))
+            vb2_queue_error(src_vq);
+
+        if (vb2_is_streaming(dst_vq))
+            vb2_queue_error(dst_vq);
+
+        atomic_set(&ctx->running, 0);
+    }
+
+    // 倒序释放资源
     v4l2_fh_del(&ctx->fh);
+    v4l2_m2m_ctx_release(ctx->fh.m2m_ctx);
     v4l2_fh_exit(&ctx->fh);
     kfree(ctx);
     return 0;
@@ -709,9 +747,19 @@ static int mm2m_probe(struct platform_device *pdev)
         goto err_m2m_init;
     }
 
+    // 5. 初始化延迟工作队列
+    dev->workqueue = create_singlethread_workqueue("mm2m workqueue");
+    if(dev->workqueue == NULL)
+    {
+        goto err_work_queue;
+    }
+
     return ret;
 
-err:
+// next err:
+    destroy_workqueue(dev->workqueue);
+
+err_work_queue:
     v4l2_m2m_release(dev->m2m_dev);
 
 err_m2m_init:
@@ -732,10 +780,11 @@ err_alloc_mm2m:
  * @note:
  *      触发流程： mm2m_exit -> platform_driver_unregister -> mm2m_remove
  *      资源管理原则：谁注册谁释放，因此需要依次释放：
- *      1. m2m实例
- *      2. video_device
- *      3. v4l2顶层容器
- *      4. mm2m_dev对象
+ *      1. workqueue
+ *      2. m2m实例
+ *      3. video_device
+ *      4. v4l2顶层容器
+ *      5. mm2m_dev对象
  * @param pdev
  */
 static void mm2m_remove(struct platform_device *pdev)
@@ -743,13 +792,15 @@ static void mm2m_remove(struct platform_device *pdev)
     // 获取驱动私有数据
     struct mm2m_dev *dev = platform_get_drvdata(pdev);
 
-    // 1. 释放m2m实例
+    // 1. 释放独有工作队列
+    destroy_workqueue(dev->workqueue);
+    // 2. 释放m2m实例
     v4l2_m2m_release(dev->m2m_dev);
-    // 2. 释放video_device
+    // 3. 释放video_device
     video_unregister_device(&dev->vfd);
-    // 3. v4l2顶层容器
+    // 4. v4l2顶层容器
     v4l2_device_unregister(&dev->v4l2_dev);
-    // 4. 释放mm2m_dev对象
+    // 5. 释放mm2m_dev对象
     kfree(dev);
 }
 
