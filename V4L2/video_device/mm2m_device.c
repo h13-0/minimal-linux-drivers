@@ -198,9 +198,9 @@ static void device_work(struct work_struct *w)
 
     // 3. 设置已用数据长度
     if (src_buf->vb2_buf.planes[0].bytesused) {
-        dst_buf->vb2_buf.planes[0].bytesused = src_buf->vb2_buf.planes[0].bytesused;
+        vb2_set_plane_payload(&dst_buf->vb2_buf, 0, src_buf->vb2_buf.planes[0].bytesused);
     } else {
-        dst_buf->vb2_buf.planes[0].bytesused = dst_buf->vb2_buf.planes[0].length;
+        vb2_set_plane_payload(&dst_buf->vb2_buf, 0, src_buf->vb2_buf.planes[0].length);
     }
 
     // 4. 标记缓冲区完成
@@ -406,7 +406,7 @@ static int mm2m_open(struct file *file)
     // 初始化m2m上下文实例
     ctx->fh.m2m_ctx = v4l2_m2m_ctx_init(dev->m2m_dev, ctx, &queue_init);
 
-    // 注册文件句柄
+    // 将文件句柄添加到设备列表
     v4l2_fh_add(&ctx->fh);
 
     // 初始化延迟工作对象，并设置回调函数
@@ -476,7 +476,7 @@ static int vidioc_querycap(struct file *file, void *priv, struct v4l2_capability
 }
 
 /**
- * @brief: 枚举输出方向(video_capture)支持的数据格式
+ * @brief: 枚举输入方向(video_capture)支持的数据格式
  * @note:
  * @param file:
  * @param fh:
@@ -486,8 +486,7 @@ static int vidioc_querycap(struct file *file, void *priv, struct v4l2_capability
 static int vidioc_enum_fmt_vid_cap(struct file *file, void *fh, struct v4l2_fmtdesc *f)
 {
     struct mm2m_ctx *ctx = fh;
-
-    struct mm2m_dev *dev = video_drvdata(file);
+    struct mm2m_dev *dev = ctx->dev;
     v4l2_info(&dev->v4l2_dev, "enum videoc cap fmt at index:%d\n", f->index);
 
     // 对于输出设备，其只支持与输入相同的类型
@@ -510,9 +509,8 @@ static int vidioc_enum_fmt_vid_cap(struct file *file, void *fh, struct v4l2_fmtd
  */
 static int vidioc_enum_fmt_vid_out(struct file *file, void *fh, struct v4l2_fmtdesc *f)
 {
-    // struct mm2m_ctx *ctx = fh;
-
-    struct mm2m_dev *dev = video_drvdata(file);
+    struct mm2m_ctx *ctx = fh;
+    struct mm2m_dev *dev = ctx->dev;
     v4l2_info(&dev->v4l2_dev, "enum videoc output fmt at index:%d\n", f->index);
 
     // 对于输入设备(用于->内核)，支持所有已知类型
@@ -577,7 +575,7 @@ static int vidioc_s_fmt_vid_cap(struct file *file, void *fh, struct v4l2_format 
 static int vidioc_s_fmt_vid_out(struct file *file, void *fh, struct v4l2_format *f)
 {
     struct mm2m_ctx* ctx = fh;
-    struct mm2m_dev *dev = video_drvdata(file);
+    struct mm2m_dev *dev = ctx->dev;
 
     // 文档规定：除非 `f->type` 字段错误，否则不应返回错误代码
     if (f->type != V4L2_BUF_TYPE_VIDEO_OUTPUT)
@@ -618,40 +616,31 @@ static int vidioc_s_fmt_vid_out(struct file *file, void *fh, struct v4l2_format 
  * @param file:
  * @param fh:
  * @param fsize: 返回给用户空间的分辨率信息
+ * @note: fsize->type并非是 `V4L2_BUF_TYPE_VIDEO_OUTPUT` 等数据流向指示，而是指定分辨率类型( `V4L2_FRMSIZE_TYPE_CONTINUOUS` 等)
  * @return
  */
 static int vidioc_enum_framesizes(struct file *file, void *fh, struct v4l2_frmsizeenum *fsize)
 {
     struct mm2m_ctx *ctx = fh;
 
-    if (fsize->type == V4L2_BUF_TYPE_VIDEO_OUTPUT) {
-        // 直接使用一个连续的分辨率区间表示，不需要更多分辨率支持
-        if (fsize->index != 0) {
-            return -EINVAL;
-        }
-
-        // 支持任意的连续分辨率
-        fsize->type = V4L2_FRMSIZE_TYPE_CONTINUOUS;
-        fsize->stepwise.min_width = 1;
-        fsize->stepwise.max_width = MAX_WIDTH;
-        fsize->stepwise.step_width = 1;
-        fsize->stepwise.min_height = 1;
-        fsize->stepwise.max_height = MAX_HEIGHT;
-        fsize->stepwise.step_height = 1;
-        return 0;
-    } else if (fsize->type == V4L2_BUF_TYPE_VIDEO_CAPTURE) {
-        // 最小分辨率为1x1，因此可通过判零判别输入端是否完成分辨率设置
-        if (ctx->curr_height && ctx->curr_width) {
-            fsize->type = V4L2_FRMSIZE_TYPE_DISCRETE;
-            fsize->discrete.width = ctx->curr_width;
-            fsize->discrete.height = ctx->curr_height;
-            return 0;
-        } else {
-            return -EINVAL;
-        }
-    } else {
+    // 验证请求的像素格式在支持列表内
+    if(find_format_index(fsize->pixel_format) < 0)
         return -EINVAL;
-    }
+
+    // 仅使用一个连续分辨率
+    if (fsize->index != 0)
+        return -EINVAL;
+
+    // 填充分辨率
+    fsize->type = V4L2_FRMSIZE_TYPE_CONTINUOUS;
+    fsize->stepwise.min_width  = 1;
+    fsize->stepwise.max_width  = MAX_WIDTH;
+    fsize->stepwise.step_width = 1;
+    fsize->stepwise.min_height = 1;
+    fsize->stepwise.max_height = MAX_HEIGHT;
+    fsize->stepwise.step_height= 1;
+
+    return 0;
 }
 
 
@@ -680,11 +669,11 @@ static const struct v4l2_ioctl_ops mm2m_ioctl_ops = {
 /**
  * @brief: video设备被注销时的资源释放回调
  * @note:
- *      触发流程：mm2m_exit -> platform_driver_unregister -> mm2m_remove -> video_unregister_device -> mm2m_device_release
+ *      触发流程：mm2m_exit -> platform_driver_unregister -> mm2m_remove -> video_unregister_device -> mm2m_video_release
  *      资源管理原则：谁注册谁释放，video_device并没有注册资源，所以不需要释放资源
  * @param vdev
  */
-static void mm2m_device_release(struct video_device *vdev)
+static void mm2m_video_release(struct video_device *vdev)
 {
     //struct mm2m_dev *dev = container_of(vdev, struct mm2m_dev, vfd);
 }
@@ -698,7 +687,7 @@ static const struct video_device mm2m_videodev = {
     .vfl_dir     = VFL_DIR_M2M,                              /** 设备数据流向指定为内存到内存 */
     .fops        = &mm2m_fops,
     .ioctl_ops   = &mm2m_ioctl_ops,
-    .release     = mm2m_device_release,
+    .release     = mm2m_video_release,
     .device_caps = V4L2_CAP_VIDEO_M2M | V4L2_CAP_VIDEO_CAPTURE | V4L2_CAP_VIDEO_OUTPUT | V4L2_CAP_STREAMING,
 };
 
