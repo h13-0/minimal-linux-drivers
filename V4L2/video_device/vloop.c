@@ -175,19 +175,17 @@ static void device_work(struct work_struct *w)
     // 执行复制
     for(int i = 0; i < buffer_num; i++)
     {
+        // 读取已用长度
+        size_t out_buf_used = out_buffers[i]->planes[0].bytesused ?
+                out_buffers[i]->planes[0].bytesused : out_buffers[i]->planes[0].length;
         // 拷贝数据
         memcpy(
             vb2_plane_vaddr(cap_buffers[i], 0),
             vb2_plane_vaddr(out_buffers[i], 0),
-            out_buffers[i]->planes[0].length
+            out_buf_used
         );
         // 设置已用数据长度
-        if(out_buffers[i]->planes[0].bytesused)
-        {
-            vb2_set_plane_payload(cap_buffers[i], 0, out_buffers[i]->planes[0].bytesused);
-        } else {
-            vb2_set_plane_payload(cap_buffers[i], 0, out_buffers[i]->planes[0].length);
-        }
+        vb2_set_plane_payload(cap_buffers[i], 0, out_buf_used);
         // 同步时间戳
         if (out_buffers[i]->timestamp == 0) {
             cap_buffers[i]->timestamp = ktime_get_ns();
