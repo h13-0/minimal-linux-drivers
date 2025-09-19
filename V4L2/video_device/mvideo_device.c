@@ -80,7 +80,7 @@ static int mvideo_open(struct file *file)
     // 注意不是存自己定义的上下文实例，因为V4L2内部实现是依赖于其文件句柄
     file->private_data = &ctx->fh;
 
-    // 注册文件句柄
+    // 添加文件句柄到设备列表
     v4l2_fh_add(&ctx->fh);
 
 err_alloc_ctx:
@@ -433,7 +433,7 @@ static void __exit mvideo_exit(void)
  */
 static int __init mvideo_init(void)
 {
-    int ret;
+    int ret = 0;
 
     // 分配设备对象的内存
     dev = kzalloc(sizeof(*dev), GFP_KERNEL);

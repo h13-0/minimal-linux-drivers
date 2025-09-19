@@ -137,7 +137,7 @@ static void device_run(void *priv)
     struct mm2m_ctx *ctx = priv;
     //struct vb2_v4l2_buffer *src_buf, *dst_buf;
 
-    // v4l2_info(&ctx->dev->v4l2_dev, "drvice running..");
+    // v4l2_info(&ctx->dev->v4l2_dev, "drvice running..\n");
 
     // 将ctx实例中的工作对象注册到共享工作队列中
     queue_delayed_work(ctx->dev->workqueue, &ctx->work, 0);
@@ -153,10 +153,10 @@ static int job_ready(void *priv)
     struct mm2m_ctx *ctx = priv;
     if(ctx->curr_width && ctx->curr_height)
     {
-        // v4l2_info(&ctx->dev->v4l2_dev, "job_ready return 1");
+        // v4l2_info(&ctx->dev->v4l2_dev, "job_ready return 1\n");
         return 1;
     } else {
-        // v4l2_info(&ctx->dev->v4l2_dev, "job_ready return 0");
+        // v4l2_info(&ctx->dev->v4l2_dev, "job_ready return 0\n");
         return 0;
     }
 }
@@ -183,7 +183,7 @@ static void device_work(struct work_struct *w)
     struct mm2m_ctx* ctx = work2ctx(w);
     struct vb2_v4l2_buffer *src_buf, *dst_buf;
 
-    // v4l2_info(&ctx->dev->v4l2_dev, "drvice working..");
+    // v4l2_info(&ctx->dev->v4l2_dev, "drvice working..\n");
 
     // 1. 获取缓冲区
     src_buf = v4l2_m2m_src_buf_remove(ctx->fh.m2m_ctx);
@@ -283,7 +283,7 @@ static int start_streaming(struct vb2_queue *q, unsigned int count)
 {
     struct mm2m_ctx *ctx = q->drv_priv;
 
-    v4l2_info(&ctx->dev->v4l2_dev, "try to start_steaming\n");
+    // v4l2_info(&ctx->dev->v4l2_dev, "try to start_steaming\n");
 
     // 启用m2m
     atomic_inc(&ctx->running);
@@ -599,7 +599,7 @@ static int vidioc_s_fmt_vid_out(struct file *file, void *fh, struct v4l2_format 
     ctx->curr_height    = f->fmt.pix.height;
 
     // 输出目标格式到日志
-    v4l2_info(&dev->v4l2_dev, "Set video output format to %c.%c.%c.%c, %dx%d",
+    v4l2_info(&dev->v4l2_dev, "Set video output format to %c.%c.%c.%c, %dx%d\n",
         formats[index].pix_format >> 0  & 0xff,
         formats[index].pix_format >> 8  & 0xff,
         formats[index].pix_format >> 16 & 0xff,
@@ -621,8 +621,6 @@ static int vidioc_s_fmt_vid_out(struct file *file, void *fh, struct v4l2_format 
  */
 static int vidioc_enum_framesizes(struct file *file, void *fh, struct v4l2_frmsizeenum *fsize)
 {
-    struct mm2m_ctx *ctx = fh;
-
     // 验证请求的像素格式在支持列表内
     if(find_format_index(fsize->pixel_format) < 0)
         return -EINVAL;
@@ -839,7 +837,7 @@ static void __exit mm2m_exit(void)
  */
 static int __init mm2m_init(void)
 {
-    int ret;
+    int ret = 0;
 
     ret = platform_device_register(&mm2m_pdev);
     if (ret)
