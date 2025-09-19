@@ -314,6 +314,16 @@ static void buf_queue(struct vb2_buffer *vb)
  */
 static int start_streaming(struct vb2_queue *q, unsigned int count)
 {
+    struct vloop_dev *dev = q->drv_priv;
+
+    // 需要立即调度一次复制工作，否则在使用非阻塞IO时会触发空读现象：
+    //      当用户态首次对capture出队，会有如下的执行逻辑：
+    //          用户态capture预入队 -> 用户态调用 `STREAMON` -> device_work -> memcpy -> vb2_buffer_done -> 重新回到队列
+    //      但是当用户态使用的是非阻塞IO时，从 `STREAMON` 到 `vb2_buffer_done` 之间需要一段时间，用户态的 `DQBUF` 会立即返回 `-EAGAIN`
+    // 从而导致其最开始的一段时间通过非阻塞IO出队结果均为 `-EAGAIN` (OpenCV中就使用的是该方法，可以很简单的复现该情况)
+    if(!kfifo_is_empty(&dev->cap_fifo) && !kfifo_is_empty(&dev->out_fifo))
+        queue_delayed_work(dev->workqueue, &dev->work, 0);
+
     return 0;
 }
 
@@ -484,13 +494,7 @@ static const struct v4l2_file_operations vloop_fops = {
     .release        = vloop_release,                     /** 设备释放回调函数 */
     .unlocked_ioctl = video_ioctl2,
     .mmap           = vloop_mmap,                        /** 需要自行实现，否则内核不知道要使用哪个队列 */
-
-    // 必须实现。否则无法避免在非阻塞读取时避免生产者-消费者同步启动问题。
-    // 当用户态首次对capture出队，会有如下的执行逻辑：
-    //      用户态capture预入队 -> 用户态调用 `STREAMON` -> device_work -> memcpy -> vb2_buffer_done -> 重新回到队列
-    // 但是当用户态使用的是非阻塞IO时，从 `STREAMON` 到 `vb2_buffer_done` 之间需要一段时间，用户态的 `DQBUF` 会立即返回 `-EAGAIN`
-    // 从而导致其最开始的一段时间通过非阻塞IO出队结果均为 `-EAGAIN` (OpenCV中就使用的是该方法，可以很简单的复现该情况)
-    .poll           = vloop_poll,                        /** 需要自行实现，否则无法避免在非阻塞读取时避免生产者-消费者同步启动问题 */
+    .poll           = vloop_poll,                        /** 需要自行实现 */
 };
 
 /**
