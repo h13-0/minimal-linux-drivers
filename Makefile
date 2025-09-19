@@ -6,6 +6,7 @@ PWD := $(shell pwd)
 obj-m += platform_device/mplatform_devdrv.o
 obj-m += V4L2/video_device/mm2m_device.o
 obj-m += V4L2/video_device/mvideo_device.o
+obj-m += V4L2/video_device/vloop.o
 
 # 构建所有模块
 all:
