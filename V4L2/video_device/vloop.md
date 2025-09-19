@@ -14,6 +14,11 @@ number headings: auto, first-level 1, max 6, 1.1
 
 # 3 特性与实现
 
+运行效果：
+- 左侧为图像输入进程(用户->内核，output设备)
+- 右侧为图像输出进程(内核->用户，capture设备)
+	![](../../Resources/vloop.gif)
+
 ## 3.1 基本特性
 
 该示例拥有如下特性：
