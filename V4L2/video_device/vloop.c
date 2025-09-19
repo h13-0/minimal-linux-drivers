@@ -368,7 +368,7 @@ static int vloop_open(struct file *file)
     struct vloop_dev *dev = video_drvdata(file);
     struct vloop_ctx *ctx = NULL;
 
-    v4l2_info(&dev->v4l2_dev, "vloop open\n");
+    // v4l2_info(&dev->v4l2_dev, "vloop open\n");
 
     // 1. 分配上下文实例
     ctx = kzalloc(sizeof(*ctx), GFP_KERNEL);
@@ -406,7 +406,7 @@ static int vloop_release(struct file *file)
     struct vloop_ctx *ctx = file2ctx(file);
     struct vloop_dev *dev = ctx->dev;
 
-    v4l2_info(&dev->v4l2_dev, "vloop release\n");
+    // v4l2_info(&dev->v4l2_dev, "vloop release\n");
 
     // 为struct video_device.lock加锁
     mutex_lock(&dev->dev_mutex);
@@ -462,6 +462,18 @@ static int vloop_mmap(struct file *file, struct vm_area_struct *vma)
 }
 
 
+static __poll_t vloop_poll(struct file *file, poll_table *wait)
+{
+    struct vloop_ctx *ctx = file2ctx(file);
+
+    // 如果没有设置当前队列，返回错误
+    if (!ctx->curr_queue)
+        return EPOLLERR;
+
+    return vb2_poll(ctx->curr_queue, file, wait);
+}
+
+
 /**
  * @brief: video_device的文件回调函数
  * @note: 本结构体中所有回调均未拥有 `struct video_device.lock` ，需要按需加锁!!!
@@ -472,6 +484,13 @@ static const struct v4l2_file_operations vloop_fops = {
     .release        = vloop_release,                     /** 设备释放回调函数 */
     .unlocked_ioctl = video_ioctl2,
     .mmap           = vloop_mmap,                        /** 需要自行实现，否则内核不知道要使用哪个队列 */
+
+    // 必须实现。否则无法避免在非阻塞读取时避免生产者-消费者同步启动问题。
+    // 当用户态首次对capture出队，会有如下的执行逻辑：
+    //      用户态capture预入队 -> 用户态调用 `STREAMON` -> device_work -> memcpy -> vb2_buffer_done -> 重新回到队列
+    // 但是当用户态使用的是非阻塞IO时，从 `STREAMON` 到 `vb2_buffer_done` 之间需要一段时间，用户态的 `DQBUF` 会立即返回 `-EAGAIN`
+    // 从而导致其最开始的一段时间通过非阻塞IO出队结果均为 `-EAGAIN` (OpenCV中就使用的是该方法，可以很简单的复现该情况)
+    .poll           = vloop_poll,                        /** 需要自行实现，否则无法避免在非阻塞读取时避免生产者-消费者同步启动问题 */
 };
 
 /**
@@ -758,6 +777,7 @@ static int vidioc_streamoff(struct file *file, void *fh, enum v4l2_buf_type i)
 
     if (vb2_queue_is_busy(ctx->curr_queue, file))
         return -EBUSY;
+
     return vb2_streamoff(ctx->curr_queue, i);
 }
 
