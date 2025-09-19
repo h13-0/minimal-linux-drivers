@@ -5,6 +5,8 @@ number headings: auto, first-level 1, max 6, 1.1
 
 # 1 最小video_device示例
 
+
+本示例依赖系统模块 `videobuf2_v4l2` 和 `videobuf2_vmalloc`
 # 2 目录
 
 ```toc
@@ -97,6 +99,8 @@ static void device_release(struct device *dev)
 ```shell
 sudo modprobe ./minimal_video_device.ko color_r=255 color_g=0 color_b=0
 ```
+
+# 4 八股
 
 
 
