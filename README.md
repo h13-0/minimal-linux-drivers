@@ -12,7 +12,7 @@ number headings: auto, first-level 1, max 6, 1.1
 - V4L2子系统：
 	- video设备：
 		- 最小摄像头驱动
-		- 最小m2m设备驱动
+		- 最小m2m设备驱动(与视频回环设备类似，但是是单进程内，通常用于编解码)
 		- [视频回环设备](./V4L2/video_device/vloop.md)(虚拟摄像头，自定义摄像头画面，左为输入进程，右为摄像头画面)
 			![](./Resources/vloop.gif)
 - 平台设备：

@@ -569,6 +569,9 @@ static int vidioc_g_fmt_vid_cap_out(struct file *file, void *fh, struct v4l2_for
     f->fmt.pix.height       = dev->curr_height;
     f->fmt.pix.field        = V4L2_FIELD_NONE;                          /** 使用普通逐行扫描，大多数CMOS均为此格式 */
     f->fmt.pix.pixelformat  = formats[dev->curr_fmt_index].pix_format;
+    f->fmt.pix.bytesperline = dev->curr_width * formats[dev->curr_fmt_index].pix_size;
+    f->fmt.pix.sizeimage    = f->fmt.pix.bytesperline * dev->curr_height;
+
     return 0;
 }
 
@@ -829,7 +832,7 @@ static const struct video_device vloop_videodev =
     .fops        = &vloop_fops,
     .ioctl_ops   = &vloop_ioctl_ops,
     .release     = vloop_video_release,
-    .device_caps = V4L2_CAP_VIDEO_CAPTURE | V4L2_CAP_VIDEO_OUTPUT | V4L2_CAP_STREAMING | V4L2_CAP_READWRITE,
+    .device_caps = V4L2_CAP_VIDEO_CAPTURE | V4L2_CAP_VIDEO_OUTPUT | V4L2_CAP_STREAMING,
 };
 
 
