@@ -81,7 +81,7 @@ static void mpdev_remove(struct platform_device *pdev)
  */
 static struct platform_driver mpdrv = {
     .probe       = mpdev_probe,                 // 设备初始化的入口函数
-    .remove_new  = mpdev_remove,                // 设备被移除时触发回调(移除或卸载时触发)
+    .remove      = mpdev_remove,                // 设备被移除时触发回调(移除或卸载时触发)
     .driver      = {
         .name    = MPDEV_NAME,                  // 驱动名
     },

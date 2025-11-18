@@ -990,7 +990,7 @@ static void vloop_remove(struct platform_device *pdev)
 static struct platform_driver vloop_pdrv =
 {
     .probe      = vloop_probe,
-    .remove_new = vloop_remove,
+    .remove     = vloop_remove,
     .driver     = {
         .name   = VLOOP_NAME,             /* 驱动和设备之间通过相同名称进行匹配 */
     },

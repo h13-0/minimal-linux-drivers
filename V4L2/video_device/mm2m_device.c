@@ -797,7 +797,7 @@ static void mm2m_remove(struct platform_device *pdev)
 static struct platform_driver mm2m_pdrv =
 {
     .probe      = mm2m_probe,
-    .remove_new = mm2m_remove,
+    .remove     = mm2m_remove,
     .driver     = {
         .name   = MM2M_NAME,             /* 驱动和设备之间通过相同名称进行匹配 */
     },
