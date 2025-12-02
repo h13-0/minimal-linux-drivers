@@ -1,5 +1,5 @@
 # 指定内核构建目录
-KDIR := /lib/modules/$(shell uname -r)/build
+KDIR ?= /lib/modules/$(shell uname -r)/build
 PWD := $(shell pwd)
 
 # 定义所有需要编译的模块
