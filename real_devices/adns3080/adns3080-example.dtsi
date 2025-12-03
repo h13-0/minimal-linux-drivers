@@ -1,0 +1,12 @@
+&spi2 {
+	status = "okay";
+	adns3080: adns3080@0{
+		status = "okay";
+		compatible = "avago,adns-3080";
+		reg = <0x00>;
+		spi-max-frequency = <1000000>;
+		/* rk3399 driver support SPI_CPOL | SPI_CPHA | SPI_CS_HIGH */
+		spi-cpha;		/* SPI mode: CPHA=1 */
+		spi-cpol;   	/* SPI mode: CPOL=1 */
+	};
+};
