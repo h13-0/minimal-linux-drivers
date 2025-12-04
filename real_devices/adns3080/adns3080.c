@@ -24,6 +24,12 @@
 #define FAULTY_TIMES       (3)                           /** 硬件错误上限，超过该阈值后标记该硬件，并放弃除注销设备外的调用 */
 #define FIFO_SIZE          (VIDEO_MAX_FRAME)             /** 必须为2的整数幂，且大于等于2 */
 
+/**
+ * @group: 模块可选参数
+ */
+static uint32_t clock_freq = 24000000;                   /** adns3080内部时钟速度，默认为24Mhz */
+module_param(clock_freq, uint, S_IRUGO);
+
 
 
 /**
@@ -138,12 +144,12 @@ struct adns3080_dev {
     struct delayed_work     work;               /** 可延迟工作对象， */
 
     /** 设备状态属性 */
-    uint32_t   		        clock_freq;         /** adns内部时钟速率，默认24Mhz */
     uint16_t                max_frame_period;
     uint16_t                min_frame_period;
 
-    /** 视频设备相关 */
+    /** 视频相关成员 */
     uint8_t                 scale;              /** 分辨率的放大倍数，adns3080原生分辨率为30x30，最终驱动输出的分辨率为(30*scale)x(30*scale) */
+    uint8_t                 *frame_buffer;      /** SPI(DMA)传输用的帧缓冲区 */
 
     /** 等待填入图像数据的缓冲区队列相关 */
     DECLARE_KFIFO(fifo, struct vb2_buffer *, FIFO_SIZE);  /** 待填充图像队列 */
@@ -307,7 +313,7 @@ void adns3080_set_min_frame_period(struct adns3080_dev *dev, uint16_t period)
  */
 void adns3060_set_frame_rate(struct adns3080_dev *dev, uint16_t fps)
 {
-    uint16_t period = dev->spi->max_speed_hz / fps; // C语言默认只保留整数，即向下取整
+    uint16_t period = clock_freq / fps; // C语言默认只保留整数，即向下取整
     adns3080_enable_fixed_fr(dev, false);
     adns3080_set_max_frame_period(dev, period);
     adns3080_set_min_frame_period(dev, period);
@@ -315,14 +321,19 @@ void adns3060_set_frame_rate(struct adns3080_dev *dev, uint16_t fps)
 
 /**
  * @brief: 读取指定范围的帧数据
+ * @param:
+ *      - dev: 要操作的adns3080实例
+ *      - data: **由kmalloc系函数获得的buffer**
+ *      - len: 要读取的帧长度
  * @note:
+ *      - data**必须**使用kmalloc出来的内存，而非vmalloc等
  * 		- adns的分辨率为30x30，因此前900个数据为单个完整帧
  * 		- adns最大可读1536个pixel，多余的我也不知道是什么
  */
 int adns3080_cap_frame(struct adns3080_dev *dev, uint8_t *data, int len)
 {
-    // 提取定义变量兼容老内核的C89
-    uint8_t reg = 0x00;
+    // 提前定义变量兼容老内核的C89
+    uint8_t reg = REG_PIXEL_BURST & 0x7f;
 
     if(len <= 0 || len > 1536)
         return -EINVAL;
@@ -331,15 +342,9 @@ int adns3080_cap_frame(struct adns3080_dev *dev, uint8_t *data, int len)
     adns3080_write_reg(dev, REG_FRAME_CAPTURE, 0x83);
 
     // 等待最大帧周期
-    msleep((dev->max_frame_period / dev->spi->max_speed_hz * 1000) + 1);
+    msleep((dev->max_frame_period / clock_freq * 1000) + 1);
 
-    // 读取帧
-    reg = REG_PIXEL_BURST & 0x7f;
-
-    spi_write(dev->spi, &reg, 1);
-    spi_read(dev->spi, data, len);
-
-    return 0;
+    return spi_write_then_read(dev->spi, &reg, 1, data, len);
 }
 
 /**
@@ -387,14 +392,15 @@ static void device_work(struct work_struct *w)
     int buffer_num = 0;
     // 待填充帧数组(由dev->fifo出队获得)
     struct vb2_buffer *buffers[FIFO_SIZE] = { NULL };
-    // 原始帧数据(30x30像素)
-    static uint8_t raw_data[900] = { 0 };
     // 目标帧平面地址
     uint8_t *dst = NULL;
     // 目标帧尺寸
     uint16_t dst_size = 0;
     // 当前目标帧的行列地址，临时指针
     uint8_t *src_row = NULL, *dst_row = NULL, *p = NULL;
+
+    // 尝试申请帧缓冲区
+
 
     // 将需要填充数据的缓冲区出队
     spin_lock(&dev->fifo_spin);
@@ -412,7 +418,7 @@ static void device_work(struct work_struct *w)
         }
 
         // 2. 获取原始帧数据
-        ret = adns3080_cap_frame(dev, raw_data, sizeof(raw_data));
+        ret = adns3080_cap_frame(dev, dev->frame_buffer, 900);
         if (ret != 0) {
             vb2_buffer_done(buffers[i], VB2_BUF_STATE_ERROR);
             continue;
@@ -420,8 +426,8 @@ static void device_work(struct work_struct *w)
 
         // 3. 针对dev->scale=1的fast path
         if (dev->scale == 1) {
-            memcpy(dst, raw_data, sizeof(raw_data));
-            vb2_set_plane_payload(buffers[i], 0, sizeof(raw_data));
+            memcpy(dst, dev->frame_buffer, 900);
+            vb2_set_plane_payload(buffers[i], 0, 900);
             vb2_buffer_done(buffers[i], VB2_BUF_STATE_DONE);
             continue;
         }
@@ -431,7 +437,7 @@ static void device_work(struct work_struct *w)
 
         // 5. 执行放大逻辑
         for (y = 0; y < 30; ++y) {
-            src_row = raw_data + y * 30;
+            src_row = dev->frame_buffer + y * 30;
             // 5.1 第 y 组放大后首行
             dst_row = dst + (y * dev->scale) * dst_size;
 
@@ -830,11 +836,20 @@ static int adns3080_probe(struct spi_device *spi)
         ret = -ENOMEM;
         goto err_devm_kzalloc;
     }
-    // 3.2 寄存数据
+    // 3.2 分配帧缓冲区
+    dev->frame_buffer = devm_kzalloc(&spi->dev, 900, GFP_KERNEL | GFP_DMA);
+    if (dev->frame_buffer == NULL)
+    {
+        ret = -ENOMEM;
+        goto err_devm_kzalloc;
+    }
+
+    // 3.3 寄存数据
     dev->spi = spi;
     spi_set_drvdata(spi, (void*)dev);
-    // 3.3 初始化自旋锁
+    // 3.4 初始化杂项
     spin_lock_init(&dev->fifo_spin);
+    INIT_KFIFO(dev->fifo);
 
     // 4. 开启固定帧率
     adns3080_enable_fixed_fr(dev, false);
@@ -903,6 +918,8 @@ err_video_register:
 
 err_v4l2_register:
     // 由于使用devm_kzalloc，因此只需要返回错误码，而无须手动释放设备内存
+    // kfree(dev->frame_buffer);
+    // err_kframe_kzalloc:
     // kfree(dev);
 err_devm_kzalloc:
 err_get_pid:
@@ -926,8 +943,8 @@ static int adns3080_remove(struct spi_device *spi)
     video_unregister_device(&dev->vfd);
     v4l2_device_unregister(&dev->v4l2_dev);
     // 当使用devm_kzalloc时，则无须再手动释放设备对象，只需要完成上述软硬件操作即可
+    // kfree(dev->frame_buffer);
     // kfree(dev);
-
     return 0;
 }
 
