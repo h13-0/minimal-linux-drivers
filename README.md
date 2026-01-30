@@ -5,9 +5,9 @@ number headings: auto, first-level 1, max 6, 1.1
 
 ## 1.1 Readme
 
-本仓库为各需求下~~最简~~Linux驱动的实现，尽可能地保持正确与精简。
-本仓库说明文档建议参考[网页版](http://notebooks.h13.tech/linux%E5%86%85%E6%A0%B8%E5%8E%9F%E7%90%86%E5%8F%8A%E5%85%B6%E5%BC%80%E5%8F%91/minimal-linux-drivers/readme.html)而非Github版本，前者有更好的排版与引用关系。
-可配合[h13-0/Notebooks](https://github.com/h13-0/Notebooks)使用。
+本仓库为各需求下~~最简~~Linux驱动的实现，尽可能地保持正确与精简。  
+本仓库说明文档建议参考[网页版](http://notebooks.h13.tech/linux%E5%86%85%E6%A0%B8%E5%8E%9F%E7%90%86%E5%8F%8A%E5%85%B6%E5%BC%80%E5%8F%91/minimal-linux-drivers/readme.html)而非Github版本，前者有更好的排版与引用关系。  
+可配合[h13-0/Notebooks](https://github.com/h13-0/Notebooks)使用。  
 
 当前已实现：
 - V4L2子系统：
@@ -27,7 +27,7 @@ number headings: auto, first-level 1, max 6, 1.1
 由于Linux内核接口会随时间演进，且本仓库是驱动入门Demo，因此不会在代码中引入复杂的版本判定机制。
 
 版本规定如下所示：
-1. 内核版本介于 `6.13-rc2` ~ `6.14.0` 时，编译与测试通过
+1. 内核版本介于 `6.13-rc2` ~ `6.14.0` 时，编译与测试通过。
 2. 各目录下若存有 `xx.${version}.c` 的文件，则意味着对应文件为对应版本下编译测试通过的例程。若无特殊说明则版本应参照规则1所示。
 
 已知内核版本兼容性问题： ^yhyaw3
